@@ -188,7 +188,7 @@ footer{margin-top:26px;color:var(--muted);font-size:12.5px;max-width:78ch}
   <footer>
     Sales figures are modeled from review velocity and search volume is a proxy, not
     retailer-reported data — treat both as directional. Rankings come from the snapshots
-    you import, collected with the companion Python script. Build 16.
+    you import, collected with the companion Python script. Build 19.
   </footer>
 </div>
 
@@ -226,10 +226,12 @@ footer{margin-top:26px;color:var(--muted);font-size:12.5px;max-width:78ch}
 
 <div class="toast" id="toast" role="status"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 "use strict";
 /* ---------- storage layer: db capability → localStorage → memory ---------- */
 let store = null;
+let dlCap = null;
 
 function makeMemoryStore(seed){
   const cache = seed || { keywords:{}, settings:{} };
@@ -513,6 +515,85 @@ function rankChart(kw){
   return '<div class="chartbox">'+s+'</div>'+legend;
 }
 
+async function exportExcel(){
+  if(typeof XLSX === "undefined"){ toast("Excel library didn\u2019t load \u2014 check your connection and reload"); return; }
+  const wb = XLSX.utils.book_new();
+  const kwRows = keywords.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(kw => {
+    const mp = myBest(kw); const ml = mp ? latest(mp) : null;
+    const bp = bestProduct(kw); const lt = bp ? latest(bp) : null;
+    return {
+      "Keyword": kw.name,
+      "Search volume": kw.volumeProxy != null ? kw.volumeProxy : "",
+      "Results": kw.resultsText || kw.resultsCount || "",
+      "Products tracked": Object.keys(kw.products||{}).length,
+      "Your rank": ml && ml.rank != null ? ml.rank : "",
+      "Your page": ml && ml.rank != null ? pageOf(ml.rank) : "",
+      "Est. sales / mo": kwSales(kw) != null ? kwSales(kw) : "",
+      "Updated": lt ? new Date(lt.t).toISOString().slice(0,10) : ""
+    };
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(kwRows.length?kwRows:[{"Keyword":"(no keywords yet)"}]), "Keywords");
+  const mineRows = [], allRows = [], histRows = [];
+  keywords.forEach(kw => {
+    Object.values(kw.products||{}).forEach(p => {
+      const lt = latest(p);
+      const base = {
+        "Keyword": kw.name,
+        "Rank": lt && lt.rank != null ? lt.rank : "",
+        "Page": lt && lt.rank != null ? pageOf(lt.rank) : "",
+        "Title": p.title || "",
+        "Brand": p.brand || "",
+        "TCIN": p.tcin,
+        "SKU": skuOf(p.tcin) || "",
+        "Price": lt && lt.price != null ? lt.price : "",
+        "Rating": lt && lt.rating != null ? lt.rating : "",
+        "Reviews": lt && lt.reviews != null ? lt.reviews : "",
+        "Est. sales / mo": estMonthlySales(p) != null ? estMonthlySales(p) : "",
+        "Mine": isMine(p) ? "YES" : ""
+      };
+      allRows.push(base);
+      if(isMine(p)) mineRows.push(base);
+      (p.history||[]).forEach(h => {
+        histRows.push({
+          "Keyword": kw.name, "TCIN": p.tcin, "SKU": skuOf(p.tcin) || "", "Title": p.title || "",
+          "Date": new Date(h.t).toISOString().slice(0,16).replace("T"," "),
+          "Rank": h.rank != null ? h.rank : "",
+          "Price": h.price != null ? h.price : "",
+          "Rating": h.rating != null ? h.rating : "",
+          "Reviews": h.reviews != null ? h.reviews : ""
+        });
+      });
+    });
+  });
+  const rk = v => (v === "" ? 9999 : v);
+  allRows.sort((a,b) => a.Keyword === b.Keyword ? rk(a.Rank)-rk(b.Rank) : (a.Keyword > b.Keyword ? 1 : -1));
+  mineRows.sort((a,b) => rk(a.Rank)-rk(b.Rank));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mineRows.length?mineRows:[{"Keyword":"(no tracked products yet)"}]), "My products");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(allRows.length?allRows:[{"Keyword":"(import a snapshot first)"}]), "All products");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(histRows.length?histRows:[{"Keyword":"(no history yet)"}]), "Rank history");
+  const buf = XLSX.write(wb, {type:"array", bookType:"xlsx"});
+  const fname = "scout-" + new Date().toISOString().slice(0,10) + ".xlsx";
+  if(dlCap){
+    try{
+      await dlCap.save({ filename: fname, data: buf.slice(0) });
+      toast("Excel saved: " + fname);
+      return;
+    }catch(e){
+      if(e && e.code === "declined") return;
+      if(e && e.code === "rate_limited"){ toast("A save prompt is already open \u2014 try again in a moment"); return; }
+    }
+  }
+  try{
+    const blob = new Blob([buf], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast("Excel downloading: " + fname);
+  }catch(e){ toast("Couldn\u2019t create the Excel file"); }
+}
+
 /* ---------- rendering ---------- */
 function render(){
   const app = $("#app");
@@ -568,6 +649,8 @@ function renderMine(){
     + '<textarea id="skuMapInput" style="min-height:90px" placeholder="90848122, BMB-QUEEN-WHT&#10;87231145\tBMB-KING-GRY"></textarea>'
     + '<div class="toolbar" style="margin-top:10px;margin-bottom:0">'
     + '<button class="primary" id="saveSkuMap">Save mapping</button>'
+    + '<button id="skuFileBtn">Upload Excel/CSV</button>'
+    + '<input type="file" id="skuFile" accept=".xlsx,.xls,.csv,.txt" style="display:none">'
     + (mapN ? '<button id="clearSkuMap">Clear all</button>' : '')
     + '</div></div>';
 
@@ -661,6 +744,41 @@ function bindMine(){
     toast("Mapped "+added+" TCIN"+(added>1?"s":"")+" to SKUs");
     try{ await store.saveSettings(settings); }catch(e){}
   });
+  const sfBtn = $("#skuFileBtn"), sfInp = $("#skuFile");
+  if(sfBtn && sfInp){
+    sfBtn.addEventListener("click", () => sfInp.click());
+    sfInp.addEventListener("change", async () => {
+      const f = sfInp.files && sfInp.files[0];
+      if(!f) return;
+      if(typeof XLSX === "undefined"){ toast("Excel library didn\u2019t load \u2014 reload the page"); sfInp.value=""; return; }
+      try{
+        const buf = await f.arrayBuffer();
+        const wb = XLSX.read(buf, {type:"array"});
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:false});
+        settings.skuMap = settings.skuMap || {};
+        let added = 0;
+        rows.forEach(r => {
+          if(!Array.isArray(r)) return;
+          const cells = r.map(c => String(c==null?"":c).trim()).filter(Boolean);
+          if(cells.length < 2) return;
+          let t = null;
+          for(const c of cells){ const mm = c.match(/^\d{6,10}$/); if(mm){ t = mm[0]; break; } }
+          if(!t){ for(const c of cells){ const mm = c.match(/\d{6,10}/); if(mm){ t = mm[0]; break; } } }
+          if(!t) return;
+          const sku = cells.filter(c => c.indexOf(t) === -1).join(" ").trim();
+          if(!sku) return;
+          settings.skuMap[t] = sku.slice(0,60);
+          added++;
+        });
+        sfInp.value = "";
+        if(!added){ toast("No TCIN+SKU pairs found in that file"); return; }
+        render();
+        toast("Mapped "+added+" TCIN"+(added>1?"s":"")+" from "+f.name);
+        try{ await store.saveSettings(settings); }catch(e){}
+      }catch(e){ sfInp.value=""; toast("Couldn\u2019t read that file"); }
+    });
+  }
   const csBtn = $("#clearSkuMap");
   if(csBtn) csBtn.addEventListener("click", async () => {
     settings.skuMap = {};
@@ -680,6 +798,8 @@ function renderList(){
     + '<button class="primary" id="addKw">Track keyword</button>'
     + '<div class="spacer"></div>'
     + '<button id="importBtn">Import snapshot</button>'
+    + '<button id="backupBtn" title="Save all data as a restorable file">Backup</button>'
+    + '<button id="excelBtn" title="Download everything as an Excel workbook">Export Excel</button>'
     + '</div>';
 
   if(!keywords.length){
@@ -785,6 +905,43 @@ function bindList(){
   $("#addKw").addEventListener("click", add);
   $("#newKw").addEventListener("keydown", e => { if(e.key==="Enter") add(); });
   $("#importBtn").addEventListener("click", openImport);
+  const xb = $("#excelBtn");
+  if(xb) xb.addEventListener("click", exportExcel);
+  const bk = $("#backupBtn");
+  if(bk) bk.addEventListener("click", async () => {
+    const payload = JSON.stringify({ scoutBackup: true, savedAt: new Date().toISOString(),
+      settings: settings, keywords: keywords }, null, 1);
+    const fname = "scout-backup-" + new Date().toISOString().slice(0,10) + ".json";
+    if(dlCap){
+      try{
+        await dlCap.save({ filename: fname, data: payload });
+        toast("Backup saved as " + fname + " — restore any time via Import snapshot");
+        return;
+      }catch(e){
+        if(e && e.code === "declined") return;
+        if(e && e.code === "rate_limited"){ toast("A save prompt is already open — try again in a moment"); return; }
+        /* other errors: fall through to browser download / clipboard */
+      }
+    }
+    try{
+      const blob = new Blob([payload], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast("Backup downloading as " + fname);
+      return;
+    }catch(e){}
+    try{
+      await navigator.clipboard.writeText(payload);
+      toast("Backup copied to clipboard — paste it into a text file to keep it");
+    }catch(e){
+      $("#importText").value = payload;
+      $("#importDlg").showModal();
+      toast("Copy the backup text from the box and save it in a file");
+    }
+  });
   const demo = $("#demoBtn");
   if(demo) demo.addEventListener("click", loadSample);
   document.querySelectorAll("tr.kw").forEach(tr => {
@@ -884,6 +1041,17 @@ async function doImport(){
   catch(e){ toast("That isn’t valid JSON — paste exactly what the bookmark or collector copied"); return; }
   if(data && !Array.isArray(data) && data.notes && data.url && !data.results){
     toast("That's a diagnostic report, not product data — run the bookmark again until it says 'copied N products'");
+    return;
+  }
+  if(data && data.scoutBackup === true && Array.isArray(data.keywords)){
+    applySettings(data.settings || {});
+    const restored = sanitizeKws(data.keywords);
+    keywords = sanitizeKws(mergeKeywordSets(keywords, restored));
+    $("#importDlg").close();
+    render();
+    toast("Backup restored — "+keywords.length+" keyword(s)");
+    for(const kw of keywords){ try{ await store.saveKeyword(kw); }catch(e){ break; } }
+    try{ await store.saveSettings(settings); }catch(e){}
     return;
   }
   const list = Array.isArray(data) ? data : [data];
@@ -1018,6 +1186,11 @@ $("#settingsSave").addEventListener("click", async () => {
       }
     }
   }catch(e){ /* stay on local storage */ }
+  try{
+    if(window.claude && typeof window.claude.use === "function"){
+      dlCap = await window.claude.use("downloads");
+    }
+  }catch(e){ dlCap = null; }
 })();
 </script>
 </body>
