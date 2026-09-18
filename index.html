@@ -148,8 +148,16 @@ code{
 .chip.brand{border-color:var(--brand);background:transparent;font-weight:600}
 .chipx{border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:99px;margin:0}
 .chipx:hover{color:var(--down);background:var(--surface)}
-.voledit{cursor:pointer}
-.voledit:hover{color:var(--brand)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--ink)}
+th.sortable.on{color:var(--brand)}
+.sechead{font-size:13px;font-weight:700;margin:4px 0 8px}
+.kwchip{border:1px solid var(--line);background:var(--surface);border-radius:99px;padding:6px 14px;font-weight:600;cursor:pointer;font-size:13.5px}
+.kwchip:hover{border-color:var(--brand);color:var(--brand)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.stat .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .l{font-size:12px;color:var(--muted);margin-top:3px}
 .starcell{width:34px;padding-left:10px;padding-right:0}
 .starbtn{border:none;background:transparent;font-size:17px;line-height:1;cursor:pointer;color:var(--muted);padding:4px 6px;border-radius:6px}
 .starbtn:hover{background:var(--surface-2)}
@@ -188,7 +196,7 @@ footer{margin-top:26px;color:var(--muted);font-size:12.5px;max-width:78ch}
   <footer>
     Sales figures are modeled from review velocity and search volume is a proxy, not
     retailer-reported data — treat both as directional. Rankings come from the snapshots
-    you import, collected with the companion Python script. Build 19.
+    you import, collected with the companion Python script. Build 28.
   </footer>
 </div>
 
@@ -211,16 +219,6 @@ footer{margin-top:26px;color:var(--muted);font-size:12.5px;max-width:78ch}
   <div class="row">
     <button id="settingsCancel">Cancel</button>
     <button class="primary" id="settingsSave">Save</button>
-  </div>
-</dialog>
-
-<dialog id="volDlg">
-  <h3>Search volume proxy</h3>
-  <p>Monthly search volume estimate for this keyword (e.g. from Google Keyword Planner).</p>
-  <input type="number" id="volInput" min="0" step="100">
-  <div class="row">
-    <button id="volCancel">Cancel</button>
-    <button class="primary" id="volSave">Save</button>
   </div>
 </dialog>
 
@@ -373,6 +371,8 @@ function applySettings(sIn){
   }
 }
 let view = { name:"list", kwId:null };
+let searchQ = "";
+let kwSort = { key: "updated", dir: "desc" };
 const CHIPS = ["--chip1","--chip2","--chip3","--chip4","--chip5","--chip6"];
 const HISTORY_CAP = 120;
 
@@ -411,6 +411,12 @@ function bestProduct(kw){
   const ps = Object.values(kw.products||{}).filter(p => latest(p));
   ps.sort((a,b) => (latest(a).rank||1e9) - (latest(b).rank||1e9));
   return ps[0] || null;
+}
+function salesReady(kw){
+  return Object.values(kw.products||{}).some(p => {
+    const h = sortedHistory(p).filter(x => typeof x.reviews === "number");
+    return h.length >= 2 && (h[h.length-1].t - h[0].t) >= 86400000;
+  });
 }
 function kwSales(kw){
   let sum = 0, any = false;
@@ -463,11 +469,15 @@ function sparkline(p, w, h){
 }
 
 function rankChart(kw){
-  const products = Object.values(kw.products||{})
+  const mineAll = Object.values(kw.products||{}).filter(isMine);
+  const pool = mineAll.length ? mineAll : Object.values(kw.products||{});
+  const products = pool
     .filter(p => sortedHistory(p).filter(x=>typeof x.rank==="number").length >= 2)
     .sort((a,b) => (latest(a).rank||1e9)-(latest(b).rank||1e9))
     .slice(0,6);
-  if(!products.length) return '<p class="sub">Import at least two snapshots to draw rank history.</p>';
+  if(!products.length) return '<p class="sub">'+(mineAll.length
+    ? 'Your product needs snapshots from at least two different days to draw its rank line.'
+    : 'Import at least two snapshots to draw rank history.')+'</p>';
 
   let t0=Infinity, t1=-Infinity, rMax=5;
   products.forEach(p => sortedHistory(p).forEach(x => {
@@ -672,9 +682,9 @@ function renderMine(){
         '<tr class="kw" data-id="'+esc(r.kw.id)+'" tabindex="0">'
         + '<td><div class="kwname">'+esc(r.p.title||("Product "+r.p.tcin))+'</div><div class="sub">'+(skuOf(r.p.tcin)?'<b>SKU '+esc(skuOf(r.p.tcin))+'</b> · ':'')+(r.p.brand?esc(r.p.brand)+' · ':'')+'TCIN '+esc(r.p.tcin)+'</div></td>'
         + '<td>'+esc(r.kw.name)+'</td>'
-        + '<td class="r num">'+((r.lt&&r.lt.rank!=null)?'#'+r.lt.rank:'—')+((r.lt&&r.pv)?deltaHTML(r.lt.rank,r.pv.rank):'')+'</td>'
+        + '<td class="r num">'+((r.lt&&r.lt.rank!=null)?'#'+r.lt.rank:((r.lt&&r.lt.ad)?'<span class="sub">Ad only</span>':'—'))+((r.lt&&r.pv&&r.lt.rank!=null)?deltaHTML(r.lt.rank,r.pv.rank):'')+'</td>'
         + '<td class="r num">'+((r.lt&&r.lt.rank!=null)?pageOf(r.lt.rank):'—')+'</td>'
-        + '<td class="r num">'+fmtInt(estMonthlySales(r.p))+'</td>'
+        + '<td class="r num">'+(estMonthlySales(r.p)!=null ? fmtInt(estMonthlySales(r.p)) : '<span class="sub" title="Estimates appear once review counts change across daily imports">collecting</span>')+'</td>'
         + '<td class="r">'+sparkline(r.p)+'</td></tr>').join("")
       + '</tbody></table></div>';
   }else{
@@ -792,10 +802,62 @@ function bindMine(){
     tr.addEventListener("keydown", e => { if(e.key==="Enter") go(); });
   });
 }
+function kwUpdated(kw){
+  let last = 0;
+  Object.values(kw.products||{}).forEach(p => (p.history||[]).forEach(h => { if(h.t > last) last = h.t; }));
+  return last;
+}
+function kwSortValue(kw, key){
+  switch(key){
+    case "name": return kw.name.toLowerCase();
+    case "products": return Object.keys(kw.products||{}).length;
+    case "results": return (typeof kw.resultsCount === "number") ? kw.resultsCount : -1;
+    case "yourRank": {
+      const mp = myBest(kw);
+      return mp ? latest(mp).rank : 1e9;
+    }
+    case "sales": { const v = kwSales(kw); return v == null ? -1 : v; }
+    case "updated": return kwUpdated(kw);
+    default: return 0;
+  }
+}
+function sortedKeywords(){
+  const dir = kwSort.dir === "desc" ? -1 : 1;
+  return keywords.slice().sort((a,b) => {
+    const va = kwSortValue(a, kwSort.key), vb = kwSortValue(b, kwSort.key);
+    if(va < vb) return -1*dir;
+    if(va > vb) return 1*dir;
+    return a.name.localeCompare(b.name);
+  });
+}
+function thSort(key, label, right){
+  const on = kwSort.key === key;
+  const arrow = on ? (kwSort.dir === "desc" ? " ▾" : " ▴") : "";
+  return '<th class="sortable'+(right?' r':'')+(on?' on':'')+'" data-sort="'+key+'" title="Click to sort">'+label+arrow+'</th>';
+}
+function statsHTML(){
+  let prods = 0; const mine = new Set(); let last = 0; let bestMine = null;
+  keywords.forEach(kw => Object.values(kw.products||{}).forEach(p => {
+    prods++;
+    const lt = latest(p);
+    if(lt && lt.t > last) last = lt.t;
+    if(isMine(p)){
+      mine.add(String(p.tcin));
+      if(lt && lt.rank != null && (bestMine == null || lt.rank < bestMine)) bestMine = lt.rank;
+    }
+  }));
+  return '<div class="stats">'
+    + '<div class="stat"><div class="v">'+keywords.length+'</div><div class="l">Keywords</div></div>'
+    + '<div class="stat"><div class="v">'+fmtInt(prods)+'</div><div class="l">Products tracked</div></div>'
+    + '<div class="stat"><div class="v">'+(mine.size ? mine.size : '—')+'</div><div class="l">Your listings seen</div></div>'
+    + '<div class="stat"><div class="v">'+(bestMine != null ? '#'+bestMine : '—')+'</div><div class="l">Your best rank</div></div>'
+    + '<div class="stat"><div class="v">'+(last ? fmtDate(last) : '—')+'</div><div class="l">Last import</div></div>'
+    + '</div>';
+}
 function renderList(){
   let html = tabsHTML("list") + '<div class="toolbar">'
     + '<input type="text" id="newKw" placeholder="Add a keyword to track, e.g. yoga mat" aria-label="New keyword">'
-    + '<button class="primary" id="addKw">Track keyword</button>'
+    + '<button class="primary" id="addKw" title="Adds the keyword (if new) and opens its Target search to snapshot">Track keyword ↗</button>'
     + '<div class="spacer"></div>'
     + '<button id="importBtn">Import snapshot</button>'
     + '<button id="backupBtn" title="Save all data as a restorable file">Backup</button>'
@@ -809,35 +871,88 @@ function renderList(){
     return html;
   }
 
-  const rows = keywords.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(kw => {
+  html += '<div class="toolbar">'
+    + '<input type="text" id="searchBox" placeholder="Search your data — keyword, product, brand, TCIN or SKU" aria-label="Search dashboard data" value="'+esc(searchQ)+'">'
+    + (searchQ.trim() ? '<button id="clearSearch">Clear</button>' : '')
+    + '</div>';
+  const q = searchQ.trim().toLowerCase();
+  if(q){ html += renderSearchResults(q); return html; }
+
+  html += statsHTML();
+
+  const rows = sortedKeywords().map(kw => {
     const bp = bestProduct(kw);
     const lt = bp ? latest(bp) : null;
     const pv = bp ? prev(bp) : null;
     const nProducts = Object.keys(kw.products||{}).length;
     return '<tr class="kw" data-id="'+esc(kw.id)+'" tabindex="0">'
       + '<td><div class="kwname">'+esc(kw.name)+'</div>'
-      + '<div class="sub">'+(lt ? "updated "+fmtDate(lt.t) : "no snapshots yet")+'</div></td>'
+      + (lt ? '' : '<div class="sub">no snapshots yet</div>')+'</td>'
+      + (function(){
+          const u = kwUpdated(kw);
+          return '<td class="r num">'+(u ? fmtDate(u) : '—')+'</td>';
+        })()
       + '<td class="r num">'+nProducts+'</td>'
-      + '<td class="r num voledit" data-id="'+esc(kw.id)+'" title="Click to set search volume">'+(kw.volumeProxy!=null ? fmtInt(kw.volumeProxy) : '<span class="sub">set</span>')+'</td>'
       + '<td class="r num">'+(kw.resultsText ? esc(kw.resultsText) : (kw.resultsCount!=null ? fmtInt(kw.resultsCount) : '—'))+'</td>'
       + (function(){
           const mp = myBest(kw);
           if(!mp) return '<td class="r"><span class="sub">'+(myProducts(kw).length? "not in results" : "—")+'</span></td>';
           const ml = latest(mp), mv = prev(mp);
-          return '<td class="r num">#'+ml.rank+(mv?deltaHTML(ml.rank,mv.rank):"")+'<div class="sub">page '+pageOf(ml.rank)+'</div></td>';
+          return '<td class="r num"><b>#'+ml.rank+'</b>'+(mv?deltaHTML(ml.rank,mv.rank):"")+'<div class="sub">page '+pageOf(ml.rank)+'</div></td>';
         })()
-      + '<td class="r num">'+fmtInt(kwSales(kw))+'</td>'
+      + '<td class="r num">'+(kwSales(kw)!=null ? fmtInt(kwSales(kw)) : (nProducts>0 ? '<span class="sub" title="Estimates appear once review counts change across daily imports">collecting</span>' : '—'))+'</td>'
       + '<td class="r">'+(bp ? sparkline(bp) : '<span class="sub">—</span>')+'</td>'
       + '</tr>';
   }).join("");
 
   html += '<div class="tablebox"><table><thead><tr>'
-    + '<th>Keyword</th><th class="r">Products</th><th class="r">Search volume</th><th class="r">Results</th>'
-    + '<th class="r">Your rank</th><th class="r">Est. sales / mo</th><th class="r">Trend (best)</th>'
+    + thSort("name","Keyword",false)
+    + thSort("updated","Last run",true)
+    + thSort("products","Products",true)
+    + thSort("results","Results",true)
+    + thSort("yourRank","Your rank",true)
+    + thSort("sales","Est. sales / mo",true)
+    + '<th class="r">Trend (best)</th>'
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>';
   return html;
 }
 
+function renderSearchResults(q){
+  const kwMatches = keywords.filter(k => k.name.toLowerCase().indexOf(q) > -1);
+  const prodRows = [];
+  keywords.forEach(kw => Object.values(kw.products||{}).forEach(p => {
+    const sku = skuOf(p.tcin) || "";
+    const hay = ((p.title||"")+" "+(p.brand||"")+" "+p.tcin+" "+sku).toLowerCase();
+    if(hay.indexOf(q) > -1) prodRows.push({ kw:kw, p:p, lt:latest(p), pv:prev(p) });
+  }));
+  prodRows.sort((a,b) => (((a.lt&&a.lt.rank)!=null?a.lt.rank:1e9)) - (((b.lt&&b.lt.rank)!=null?b.lt.rank:1e9)));
+  const capped = prodRows.slice(0, 60);
+  if(!kwMatches.length && !prodRows.length){
+    return '<div class="empty"><h2>No matches</h2><p>Nothing in your tracked data matches “'+esc(searchQ.trim())+'”. Try part of a product title, a brand, a TCIN or a SKU.</p></div>';
+  }
+  let html = "";
+  if(kwMatches.length){
+    html += '<p class="sechead">Keywords ('+kwMatches.length+')</p><div class="chips" style="margin-bottom:16px">'
+      + kwMatches.map(k => '<button class="kwchip kwjump" data-id="'+esc(k.id)+'">'+esc(k.name)+'</button>').join("")
+      + '</div>';
+  }
+  if(prodRows.length){
+    html += '<p class="sechead">Products ('+prodRows.length+(prodRows.length>capped.length?' — showing best '+capped.length:'')+')</p>'
+      + '<div class="tablebox"><table><thead><tr>'
+      + '<th>Product</th><th>Keyword</th><th class="r">Rank</th><th class="r">Price</th><th class="r">Reviews</th><th class="r">Trend</th>'
+      + '</tr></thead><tbody>'
+      + capped.map(r =>
+        '<tr class="kw'+(isMine(r.p)?' minerow':'')+'" data-id="'+esc(r.kw.id)+'" tabindex="0">'
+        + '<td><div class="kwname">'+esc(r.p.title||("Product "+r.p.tcin))+'</div><div class="sub">'+(skuOf(r.p.tcin)?'<b>SKU '+esc(skuOf(r.p.tcin))+'</b> · ':'')+(r.p.brand?esc(r.p.brand)+' · ':'')+'TCIN '+esc(r.p.tcin)+'</div></td>'
+        + '<td>'+esc(r.kw.name)+'</td>'
+        + '<td class="r num">'+((r.lt&&r.lt.rank!=null)?'#'+r.lt.rank+'<div class="sub">page '+pageOf(r.lt.rank)+'</div>':((r.lt&&r.lt.ad)?'<span class="sub">Ad only</span>':'—'))+'</td>'
+        + '<td class="r num">'+(r.lt?fmtMoney(r.lt.price):'—')+'</td>'
+        + '<td class="r num">'+(r.lt?fmtInt(r.lt.reviews):'—')+'</td>'
+        + '<td class="r">'+sparkline(r.p)+'</td></tr>').join("")
+      + '</tbody></table></div>';
+  }
+  return html;
+}
 function renderDetail(kw){
   const nSnaps = Math.max.apply(null, [0].concat(Object.values(kw.products||{}).map(p => (p.history||[]).length)));
   const products = Object.values(kw.products||{}).sort((a,b) => {
@@ -852,7 +967,7 @@ function renderDetail(kw){
     return '<tr'+(mn?' class="minerow"':'')+'>'
       + '<td class="starcell"><button class="starbtn'+(mn?' on':'')+'" data-tcin="'+esc(p.tcin)+'" title="'+(mn?'This is my product':'Mark as my product')+'" aria-pressed="'+(mn?'true':'false')+'">'+(mn?'★':'☆')+'</button></td>'
       + '<td><div class="kwname">'+esc(p.title||p.tcin)+'</div><div class="sub">'+(skuOf(p.tcin)?'<b>SKU '+esc(skuOf(p.tcin))+'</b> · ':'')+esc(p.brand||"")+' · TCIN '+esc(p.tcin)+'</div></td>'
-      + '<td class="r num">'+(lt&&lt.rank!=null ? "#"+lt.rank+'<div class="sub">page '+pageOf(lt.rank)+'</div>' : "—")+(lt&&pv?deltaHTML(lt.rank,pv.rank):"")+'</td>'
+      + '<td class="r num">'+(lt&&lt.rank!=null ? "#"+lt.rank+'<div class="sub">page '+pageOf(lt.rank)+'</div>' : (lt&&lt.ad ? '<span class="sub">Ad only</span>' : "—"))+(lt&&pv&&lt.rank!=null?deltaHTML(lt.rank,pv.rank):"")+'</td>'
       + '<td class="r num">'+(lt?fmtMoney(lt.price):"—")+'</td>'
       + '<td class="r num">'+(lt&&lt.rating!=null ? Number(lt.rating).toFixed(1) : "—")+'</td>'
       + '<td class="r num">'+(lt?fmtInt(lt.reviews):"—")+'</td>'
@@ -863,17 +978,24 @@ function renderDetail(kw){
 
   return '<div class="crumb"><button class="ghost" id="backBtn">← All keywords</button></div>'
     + '<div class="detail-head"><h2>'+esc(kw.name)+'</h2></div>'
-    + '<div class="detail-meta">Search volume <b class="num">'+fmtInt(kw.volumeProxy)+'</b>'
-    + ((kw.resultsText||kw.resultsCount!=null) ? ' · <b class="num">'+esc(kw.resultsText||fmtInt(kw.resultsCount))+'</b> competing results' : '')
-    + ' · <b class="num">'+products.length+'</b> products tracked'
+    + '<div class="detail-meta">'
+    + ((kw.resultsText||kw.resultsCount!=null) ? '<b class="num">'+esc(kw.resultsText||fmtInt(kw.resultsCount))+'</b> competing results · ' : '')
+    + '<b class="num">'+products.length+'</b> products tracked'
     + ' · <b class="num">'+nSnaps+'</b> snapshots'
+    + (function(){
+        let t0 = Infinity;
+        Object.values(kw.products||{}).forEach(pp => (pp.history||[]).forEach(h => { if(h.t < t0) t0 = h.t; }));
+        if(!isFinite(t0)) return "";
+        const dayN = Math.floor((Date.now()-t0)/86400000) + 1;
+        return ' · day <b class="num">'+dayN+'</b> of tracking';
+      })()
     + ' · est. <b class="num">'+fmtInt(kwSales(kw))+'</b> sales / mo across page'+ (function(){ const mp = myBest(kw); if(!mp) return myProducts(kw).length ? ' · your product is <b>not in the captured results</b>' : ''; const ml = latest(mp); return ' · your product: <b class="num">#'+ml.rank+'</b> (page '+pageOf(ml.rank)+')'; })()+ '</div>'
     + '<div class="detail-actions">'
     + '<button class="primary" id="importBtn">Import snapshot</button>'
-    + '<button id="volBtn">Set volume proxy</button>'
+    + '<button id="snapThis">Snapshot on Target ↗</button>'
     + '<button class="danger" id="delBtn">Delete keyword</button>'
     + '</div>'
-    + '<div class="panel"><h3>Rank history</h3>'+rankChart(kw)+'</div>'
+    + '<div class="panel"><h3>'+(Object.values(kw.products||{}).some(isMine)?'Your rank history':'Rank history (top products)')+'</h3>'+rankChart(kw)+'</div>'
     + (products.length
         ? '<div class="tablebox"><table><thead><tr>'
           + '<th class="starcell" aria-label="Mine"></th><th>Product</th><th class="r">Rank</th><th class="r">Price</th><th class="r">Rating</th>'
@@ -885,25 +1007,43 @@ function renderDetail(kw){
 /* ---------- events ---------- */
 function bindList(){
   bindTabs();
-  document.querySelectorAll(".voledit").forEach(td => td.addEventListener("click", e => {
-    e.stopPropagation();
-    const kw = keywords.find(k => k.id === td.dataset.id);
-    if(!kw) return;
-    volKw = kw;
-    $("#volInput").value = kw.volumeProxy != null ? kw.volumeProxy : "";
-    $("#volDlg").showModal();
-  }));
   const add = async () => {
     const name = $("#newKw").value.trim();
-    if(!name) return;
-    if(keywords.some(k => k.name.toLowerCase() === name.toLowerCase())){ toast("Already tracking that keyword"); return; }
-    const kw = { id:newId(name), name:name, volumeProxy:null, createdAt:Date.now(), products:{} };
-    keywords.push(kw);
-    render();
-    try{ await store.saveKeyword(kw); }catch(e){ toast("Kept in this browser — cloud sync will retry"); }
+    if(!name){ toast("Type a keyword first"); return; }
+    let kw = keywords.find(k => k && typeof k.name === "string" && k.name.toLowerCase() === name.toLowerCase());
+    const isNew = !kw;
+    if(isNew){
+      kw = { id:newId(name), name:name, volumeProxy:null, createdAt:Date.now(), products:{} };
+      keywords.push(kw);
+      render();
+    }
+    window.open("https://www.target.com/s?searchTerm="+encodeURIComponent(name)+"&scout=auto", "_blank");
+    toast((isNew ? "Tracking “"+name+"” — " : "")+"Target opened — click your Scout bookmark there");
+    if(isNew){ try{ await store.saveKeyword(kw); }catch(e){} }
   };
   $("#addKw").addEventListener("click", add);
   $("#newKw").addEventListener("keydown", e => { if(e.key==="Enter") add(); });
+  document.querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if(kwSort.key === key){ kwSort.dir = kwSort.dir === "desc" ? "asc" : "desc"; }
+    else { kwSort = { key: key, dir: key === "name" ? "asc" : "desc" }; }
+    render();
+  }));
+  const sb = $("#searchBox");
+  if(sb){
+    sb.addEventListener("input", () => {
+      searchQ = sb.value;
+      render();
+      const nb = $("#searchBox");
+      if(nb){ nb.focus(); try{ nb.setSelectionRange(nb.value.length, nb.value.length); }catch(e){} }
+    });
+    sb.addEventListener("keydown", e => { if(e.key === "Escape"){ searchQ = ""; render(); } });
+  }
+  const clrS = $("#clearSearch");
+  if(clrS) clrS.addEventListener("click", () => { searchQ = ""; render(); });
+  document.querySelectorAll(".kwjump").forEach(b => b.addEventListener("click", () => {
+    view = { name:"detail", kwId:b.dataset.id }; render();
+  }));
   $("#importBtn").addEventListener("click", openImport);
   const xb = $("#excelBtn");
   if(xb) xb.addEventListener("click", exportExcel);
@@ -972,10 +1112,9 @@ function bindDetail(kw){
     });
   });
   $("#importBtn").addEventListener("click", openImport);
-  $("#volBtn").addEventListener("click", () => {
-    volKw = kw;
-    $("#volInput").value = kw.volumeProxy != null ? kw.volumeProxy : "";
-    $("#volDlg").showModal();
+  $("#snapThis").addEventListener("click", () => {
+    window.open("https://www.target.com/s?searchTerm="+encodeURIComponent(kw.name)+"&scout=auto", "_blank");
+    toast("Target opened — click your Scout bookmark there, then switch back here");
   });
   const delBtn = $("#delBtn");
   delBtn.addEventListener("click", async () => {
@@ -1018,10 +1157,16 @@ function applySnapshot(sn){
     if(r.title) p.title = r.title;
     if(r.brand) p.brand = r.brand;
     p.history = (p.history||[]).filter(h => Math.abs(h.t-when) > 60000);
-    p.history.push({ t:when, rank:(typeof r.position==="number"?r.position:null),
+    const organic = (typeof r.organicPosition === "number") ? r.organicPosition : null;
+    const rawPos = (typeof r.position === "number") ? r.position : null;
+    const pt = { t:when,
+      rank: organic != null ? organic : (r.sponsored === true ? null : rawPos),
       price:(typeof r.price==="number"?r.price:null),
       rating:(typeof r.rating==="number"?r.rating:null),
-      reviews:(typeof r.reviews==="number"?r.reviews:null) });
+      reviews:(typeof r.reviews==="number"?r.reviews:null) };
+    if(r.sponsored === true) pt.ad = true;
+    if(rawPos != null) pt.pos = rawPos;
+    p.history.push(pt);
     p.history.sort((a,b)=>a.t-b.t);
     if(p.history.length > HISTORY_CAP) p.history = p.history.slice(-HISTORY_CAP);
   });
@@ -1110,17 +1255,6 @@ async function loadSample(){
 }
 
 /* ---------- dialogs & settings ---------- */
-let volKw = null;
-$("#volCancel").addEventListener("click", () => { volKw = null; $("#volDlg").close(); });
-$("#volSave").addEventListener("click", async () => {
-  const kwRef = volKw; volKw = null;
-  $("#volDlg").close();
-  if(!kwRef) return;
-  const v = parseInt($("#volInput").value, 10);
-  kwRef.volumeProxy = isNaN(v) ? null : v;
-  render();
-  try{ await store.saveKeyword(kwRef); }catch(e){}
-});
 $("#importCancel").addEventListener("click", () => $("#importDlg").close());
 $("#importGo").addEventListener("click", doImport);
 $("#importPaste").addEventListener("click", async () => {
@@ -1133,6 +1267,52 @@ $("#importPaste").addEventListener("click", async () => {
     toast("Browser blocked clipboard access — click inside the box and press Ctrl+V instead");
   }
 });
+let lastAutoImport = "";
+async function autoImportFromClipboard(){
+  try{
+    const now = Date.now();
+    if(now - (autoImportFromClipboard._t||0) < 2500) return;
+    autoImportFromClipboard._t = now;
+    if(!document.hasFocus()) return;
+    const t = await navigator.clipboard.readText();
+    if(!t) return;
+    const tt = t.trim();
+    if(tt === lastAutoImport) return;
+    if(!(tt[0] === "{" || tt[0] === "[")) return;
+    if(tt.indexOf('"keyword"') < 0 || tt.indexOf('"results"') < 0) return;
+    let data;
+    try{ data = JSON.parse(tt); }catch(e){ return; }
+    const list = Array.isArray(data) ? data : [data];
+    if(!list.length || !list.every(sn => sn && typeof sn.keyword === "string" && Array.isArray(sn.results))) return;
+    lastAutoImport = tt;
+    const touched = new Map();
+    try{ list.forEach(sn => { const kw = applySnapshot(sn); touched.set(kw.id, kw); }); }catch(e){ return; }
+    render();
+    toast("Auto-imported "+list.length+" snapshot"+(list.length>1?"s":"")+" from your clipboard");
+    for(const kw of touched.values()){ try{ await store.saveKeyword(kw); }catch(e){ break; } }
+  }catch(e){ /* clipboard not readable right now — the Import button still works */ }
+}
+window.addEventListener("focus", () => setTimeout(autoImportFromClipboard, 350));
+document.addEventListener("visibilitychange", () => { if(!document.hidden) setTimeout(autoImportFromClipboard, 350); });
+document.addEventListener("click", () => setTimeout(autoImportFromClipboard, 100), true);
+
+async function importSnapList(list, sourceLabel){
+  const valid = (list||[]).filter(sn => sn && typeof sn.keyword === "string" && Array.isArray(sn.results));
+  if(!valid.length) return false;
+  const touched = new Map();
+  try{ valid.forEach(sn => { const kw = applySnapshot(sn); touched.set(kw.id, kw); }); }catch(e){ return false; }
+  render();
+  toast("Imported "+valid.length+" snapshot"+(valid.length>1?"s":"")+" "+sourceLabel);
+  for(const kw of touched.values()){ try{ await store.saveKeyword(kw); }catch(e){ break; } }
+  return true;
+}
+window.addEventListener("message", async e => {
+  const d = e.data;
+  if(!d || d.scoutSnapshot !== true || !Array.isArray(d.snaps)) return;
+  const ok = await importSnapList(d.snaps, "straight from Target");
+  if(ok && e.source){ try{ e.source.postMessage({scoutAck:true}, "*"); }catch(err){} }
+});
+
 $("#settingsBtn").addEventListener("click", () => {
   $("#reviewRate").value = (settings.reviewRate*100).toFixed(1);
   $("#settingsDlg").showModal();
